@@ -31,15 +31,18 @@ Example usage in your syslinux.cfg:
 
   label hello
   kernel hello.c32
-  append your  example args  
+  append your  example args
 
-How does it work?
-~~~~~~~~~~~~~~~~~
-A tricky part is position-independent code (because .c32 files can be loaded
-by SYSLINUX to any address). `gcc -fPIC' doesn't work well for extern
-variables (see https://stackoverflow.com/q/47846650/97248), so tinyc32 does
-a regular compilation and linking, dumping the relocations with `-Wl,-q',
-and for each R_386_32 relocation it finds, it adds an `add [dword ebx +
+tinyc32 has been tested with SYSLINUX 4.07.
+
+How does tinyc32 work?
+~~~~~~~~~~~~~~~~~~~~~~
+A tricky part is the generation of position-independent code, which is
+needed because .c32 files can be loaded by SYSLINUX to any address. `gcc
+-fPIC' doesn't work well for extern variables (see
+https://stackoverflow.com/q/47846650/97248), so tinyc32 does a regular
+compilation and linking, dumping the relocations with `-Wl,-q', and for each
+R_386_32 relocation it finds, it adds an `add [dword ebx +
 ...], ebx' instruction (6 bytes, of which 4 bytes is the address) to the
 startup code, which does the relocation at runtime. Because of these
 additions, tinyc32 does another round of gcc compilation, which does at least
