@@ -47,7 +47,6 @@ SRCS="$@"
 # No `-s', it prevents `objdump -r' from working.
 COMPILE_CMD="gcc -Wl,-Ttext=0 -Wl,-e,_start0 -Wl,-N -Wl,--build-id=none -Wl,-q -m32 -march=i686 -static -nostdlib -nostdinc -W -Wall -Wextra -Werror -Os -fno-stack-protector -fomit-frame-pointer -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables -Os -falign-functions=1 -mpreferred-stack-boundary=2 -falign-jumps=1 -falign-loops=1 -ffunction-sections -fdata-sections -Wl,--gc-sections -isystem $TINYC32DIR/include"
 LIBS="$TINYC32DIR/cs_print.s $TINYC32DIR/cs_putc.s"
-: >"$TINYC32DIR/reloc".s
 <"$TINYC32DIR/start0.s" >start0tmp.s perl -0777 -pe '
     s@^[.]include "reloc[.]s".*$@@mg'
 #$COMPILE_CMD -c start0tmp.s $SRCS
