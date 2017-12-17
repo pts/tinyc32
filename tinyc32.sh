@@ -45,7 +45,13 @@ set -ex
 # TODO(pts): Better whitespace splitting. Use arrays.
 SRCS="$@"
 # No `-s', it prevents `objdump -r' from working.
-COMPILE_CMD="gcc -Wl,-Ttext=0 -Wl,-e,_start0 -Wl,-N -Wl,--build-id=none -Wl,-q -m32 -march=i686 -static -nostdlib -nostdinc -W -Wall -Wextra -Werror -Os -fno-stack-protector -fomit-frame-pointer -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables -Os -falign-functions=1 -mpreferred-stack-boundary=2 -falign-jumps=1 -falign-loops=1 -ffunction-sections -fdata-sections -Wl,--gc-sections -isystem $TINYC32DIR/include"
+# !! Apply some of these syslinux-4.07 gcc flags, especially -mregparm=...
+#    -m32 -march=i386 -mregparm=3 -msoft-float -mpreferred-stack-boundary=2
+#    -mincoming-stack-boundary=2 -g -Os -ffreestanding -fno-stack-protector
+#    -fwrapv -freg-struct-return -fomit-frame-pointer -fno-exceptions
+#    -fno-asynchronous-unwind-tables -fno-strict-aliasing
+#    -falign-functions=0 -falign-jumps=0 -falign-labels=0 -falign-loops=0
+COMPILE_CMD="gcc -Wl,-Ttext=0 -Wl,-e,_start0 -Wl,-N -Wl,--build-id=none -Wl,-q -m32 -march=i686 -static -nostdlib -nostdinc -W -Wall -Wextra -Werror -Os -fno-stack-protector -fomit-frame-pointer -fno-ident -fno-unwind-tables -fno-asynchronous-unwind-tables -Os -falign-functions=1 -mpreferred-stack-boundary=2 -falign-jumps=1 -falign-loops=1 -ffunction-sections -fdata-sections -fno-builtin -Wl,--gc-sections -isystem $TINYC32DIR/include"
 LIBS="$TINYC32DIR/cs_print.s $TINYC32DIR/cs_putc.s"
 <"$TINYC32DIR/start0.s" >start0tmp.s perl -0777 -pe '
     s@^[.]include "reloc[.]s".*$@@mg'
