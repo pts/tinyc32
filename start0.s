@@ -12,7 +12,7 @@ cld
  */
 .include "reloc.s"
 
-/* We copy useful function pointers and input variables SYSLINUX
+/* We copy useful function pointers and input variables Syslinux
  * provides us by the COM32R ABI (details:
  * http://www.syslinux.org/doc/comboot.txt ) to our csargs_all.
  *
