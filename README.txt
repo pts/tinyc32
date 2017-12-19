@@ -40,8 +40,10 @@ memory alignment flags to GCC.
 
 tinyc32 has been tested with Syslinux 4.07.
 
-How does tinyc32 work?
-~~~~~~~~~~~~~~~~~~~~~~
+FAQ
+~~~
+Q1. How does tinyc32 work?
+""""""""""""""""""""""""""
 A tricky part is the generation of position-independent code, which is
 needed because .c32 files can be loaded by Syslinux to any address. `gcc
 -fPIC' doesn't work well for extern variables (see
@@ -52,5 +54,10 @@ R_386_32 relocation it finds, it adds an `add [dword ebx +
 startup code, which does the relocation at runtime. Because of these
 additions, tinyc32 does another round of gcc compilation, which does at least
 and assembler invocation for the newly added instructions.
+
+Q2. Can the executables created by tinyc32 be compressed?
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Theoretically yes, but UPX (http://upx.sf.net/) and other on-the-fly
+compressors don't recognize the .c32 format yet.
 
 __END__
