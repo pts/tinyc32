@@ -20,9 +20,6 @@ Instead of your regular `gcc ...' command, run `tinyc32 gcc ...'. Use
 http://github.com/pts/tinyc32 for more information.
 """
 
-# !! TODO(pts): Distribute start0.s in .o form (for that we'd need to generate
-# several .o files for -ftinyc32-multipass).
-
 import errno
 import os
 import os.path
@@ -190,11 +187,8 @@ def load_tinyc32_elf(filename):
     raise ValueError('COM32R signature expected.')
   if (  # Relocated output.
       not data.startswith('\xb8\xfeL\xcd!\xfc\xe8\x00\x00\x00\x00\x5b') and
-      # Unrelocated data returned by load_tinyc32_elf after pass 1.
-      not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08') and
-      # Unrelocated data returned by load_tinyc32_elf after pass 2.
-      not data.startswith('\xb8\xfeL\xcd!\xfc\x90\x90\x90\x90\x90\x90\x90'
-                          '\x90\x90\x90\x90\x90')):
+      # Unrelocated data returned by load_tinyc32_elf.
+      not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08')):
     raise ValueError('tinyc32 COM32R signature expected.')
   relofss = [r_offset for r_offset, r_sym, r_type, r_type_name in rel
              if r_type == R_386_32]
@@ -209,13 +203,8 @@ def get_relocation_size(len_relofss):
 
 
 def relocate_tinyc32_elf(data, relofss, is_pass2):
-  if is_pass2:
-    if not data.startswith('\xb8\xfeL\xcd!\xfc\x90\x90\x90\x90\x90\x90\x90'
-                           '\x90\x90\x90\x90\x90'):
-      raise ValueError('Pass 2 tinyc32 COM32R signature expected.')
-  else:
-    if not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08'):
-      raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
+  if not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08'):
+    raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
   output = [
       data[:6],
       '\xe8\0\0\0\0'  # call next_instruction.
@@ -224,9 +213,6 @@ def relocate_tinyc32_elf(data, relofss, is_pass2):
   relocation_size = get_relocation_size(len(relofss))
   if is_pass2:
     delta = -11
-    if (data[6 : 6 + relocation_size] != '\x90' * relocation_size or
-        data[6 + relocation_size : 10 + relocation_size] != '\x8d\x74\x24\x08'):
-      raise ValueError('Missing NOPs in pass 2 tinyc32 COM32R.')
   else:
     delta = relocation_size - 11
   for relofs in relofss:
@@ -242,11 +228,13 @@ def relocate_tinyc32_elf(data, relofss, is_pass2):
   # Like output.append(data[6:]), but add delta to each relocated value.
   i = 6
   if is_pass2:
-    i += relocation_size
+    relofs_delta = -relocation_size
     delta = -11
   else:
+    relofs_delta = 0
     delta = relocation_size - 11
   for relofs in relofss:
+    relofs += relofs_delta
     output.append(data[i : relofs])
     i = relofs
     output.append(struct.pack(
@@ -450,7 +438,6 @@ def main(argv):
   if is_linking:
     if output_filename is None:
       output_filename = 'a.c32'
-    start0_filename = output_filename + '.tmp.start0.s'
     start0_filename_orig = os.path.join(progdir, 'start0.o')
     extra_sources.append(start0_filename_orig)
 
@@ -460,7 +447,6 @@ def main(argv):
     i += 1
     if not arg.startswith('-') or arg == '-':
       if extra_sources:
-        extra_sources_idx = len(cmd)
         cmd.extend(extra_sources)
         extra_sources = ()
     elif arg.startswith('-l'):
@@ -473,7 +459,6 @@ def main(argv):
                            (filename_base, libdirs))
     cmd.append(arg)
   if extra_sources:
-    extra_sources_idx = len(cmd)
     cmd.extend(extra_sources)
     extra_sources = ()
   if do_defaultlibs and is_linking:
@@ -488,33 +473,17 @@ def main(argv):
 
   if is_linking:
     data, relofss = load_tinyc32_elf(elf_filename)
-    if do_multipass:
-      f = open(os.path.join(progdir, 'start0.s'))
-      try:
-        start0_data = f.read()
-      finally:
-        f.close()
-      data = start0_data.replace(
-          '\n/*.include "reloc.s"*/\n',
-          '\n.fill %d, 1, 0x90\n' % get_relocation_size(len(relofss)))
-      if data == start0_data:
-        raise ValueError('Missing .include "reloc.s".')
-      f = open(start0_filename, 'w')
-      try:
-        f.write(data)
-      finally:
-        f.close()
+    if do_multipass:  # TODO(pts): Test with an actually aligned global.
+      i = cmd.index('-Wl,-Ttext=0')
+      cmd[i] = '-Wl,-Ttext=0x%x' % get_relocation_size(len(relofss))
       if is_verbose:
         print >>sys.stderr, 'info: running pass 2 linking'
-      assert cmd[extra_sources_idx] == start0_filename_orig
-      cmd[extra_sources_idx] = start0_filename
       run_command(cmd, is_verbose)  # Pass 2.
       data, relofss = load_tinyc32_elf(elf_filename)
       data = relocate_tinyc32_elf(data, relofss, is_pass2=True)
-      ensure_removed(start0_filename)
     else:
       data = relocate_tinyc32_elf(data, relofss, is_pass2=False)
-    ensure_removed(elf_filename)
+    #ensure_removed(elf_filename)
     f = open(output_filename, 'wb')
     try:
       f.write(data)

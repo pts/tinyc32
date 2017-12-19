@@ -1,5 +1,5 @@
 .text
-.align 0x100
+/*.align 0x100*/
 .globl _start0
 .type _start0, @function
 _start0:  /* The .c32 executable must start with this as its entry point. */
