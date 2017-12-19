@@ -1,0 +1,547 @@
+#! /bin/sh
+# by pts@fazekas.hu at Sun Dec 17 14:04:55 CET 2017
+
+""":" #tinyc32: wrapper tool for creating tiny Syslinuc COM32R executables
+
+type python2.7 >/dev/null 2>&1 && exec python2.7 -- "$0" ${1+"$@"}
+type python2.6 >/dev/null 2>&1 && exec python2.6 -- "$0" ${1+"$@"}
+type python2.5 >/dev/null 2>&1 && exec python2.5 -- "$0" ${1+"$@"}
+type python2.4 >/dev/null 2>&1 && exec python2.4 -- "$0" ${1+"$@"}
+exec python -- ${1+"$@"}; exit 1
+
+tinyc32 is a tiny C library and some Python scripts for Unix for creating
+tiny Syslinux COM32R executables (.c32 files). tinyc32 calls GCC with the
+appropriate flags, which calls GNU ld with the appropriate flags. The COM32R
+executables created by tinyc32 are tiny (as little as 162 bytes for
+hello-world), because they contain very little overhead.
+
+Instead of your regular `gcc ...' command, run `tinyc32 gcc ...'. Use
+`#include <tinyc32.h>' for some library (libc) functions. See
+http://github.com/pts/tinyc32 for more information.
+"""
+
+# !! TODO(pts): Distribute start0.s in .o form (for that we'd need to generate
+# several .o files for -ftinyc32-multipass).
+
+import errno
+import os
+import os.path
+import pipes
+import stat
+import struct
+import subprocess
+import sys
+
+# --- ELF tools.
+
+PT_LOAD = 1
+
+SHT_NULL = 0
+SHT_PROGBITS = 1
+SHT_SYMTAB = 2
+SHT_STRTAB = 3
+SHT_REL = 9
+SECTION_TYPES = (
+    0x0 or 'NULL',  # Section header table entry unused
+    0x1 and 'PROGBITS',  # Program data
+    0x2 and 'SYMTAB',  # Symbol table
+    0x3 and 'STRTAB',  # String table
+    0x4 and 'RELA',  # Relocation entries with addends
+    0x5 and 'HASH',  # Symbol hash table
+    0x6 and 'DYNAMIC',  # Dynamic linking information
+    0x7 and 'NOTE',  # Notes
+    0x8 and 'NOBITS',  # Program space with no data (bss)
+    0x9 and 'REL',  # Relocation entries, no addends
+    0x0A and 'SHLIB',  # Reserved
+    0x0B and 'DYNSYM',  # Dynamic linker symbol table
+    0x0E and 'INIT_ARRAY',  # Array of constructors
+    0x0F and 'FINI_ARRAY',  # Array of destructors
+    0x10 and 'PREINIT_ARRAY',  # Array of pre-constructors
+    0x11 and 'GROUP',  # Section group
+    0x12 and 'SYMTAB_SHNDX',  # Extended section indeces
+)
+
+R_386_32 =   1  # Direct 32 bit.
+R_386_PC32 = 2  # PC relative 32 bit.
+RELOCATION_TYPES = (
+  0 or 'NONE',
+  1 and '32',
+  2 and 'PC32',
+)
+
+def load_elf(filename):
+  """Removes section headers and unnecessary functions fom an ELF executable.
+
+  It also changes ei_osabi to GNU/Linux.
+
+  Args:
+    filename: Input filename. The file ill be modified in place.
+  """
+  f = open(filename, 'rb')
+  try:
+    ehdata = f.read(52)
+    if len(ehdata) != 52:
+      raise ValueError
+    # https://en.wikipedia.org/wiki/Executable_and_Linkable_Format
+    if not ehdata.startswith('\x7fELF\1\1\1'):
+      raise ValueError('Not a 32-bit LSB-first ELF v1 file.')
+    (e_osabi, e_abiversion, e_pad, e_type, e_machine, e_version, e_entry,
+     e_phoff, e_shoff, e_flags, e_ehsize, e_phentsize, e_phnum, e_shentsize,
+     e_shnum, e_shstrndx) = struct.unpack('<BB7sHHLLLLLHHHHHH', ehdata[7 : 52])
+    if e_osabi not in (0, 3):  # 0: System V, 3: Linux.
+      raise ValueError
+    if e_abiversion != 0:
+      raise ValueError
+    #if e_pad != '\0\0\0\0\0\0\0':
+    #  raise ValueError
+    if e_type != 2:
+      raise ValueError('Expected an executable file.')
+    if e_machine != 3:  # x86.
+      raise ValueError('Expected i386.')
+    if e_version != 1:
+      raise ValueError
+    if e_ehsize != 52:
+      raise ValueError
+    if e_phentsize != 32:
+      raise ValueError
+    if e_flags != 0:
+      raise ValueError
+    if e_shentsize != 40:
+      raise ValueError
+    if e_phnum >> 7:  # Typically there is 1 or 2 in statically linked exec.
+      raise ValueError('Too many program header entries.')
+    f.seek(e_phoff)
+    phdata = f.read(32 * e_phnum)
+    if len(phdata) != 32 * e_phnum:
+      raise ValueError
+    #truncate_ofs = max(52, e_phoff + 32 * e_phnum)
+    ph = []
+    for pho in xrange(0, 32 * e_phnum, 32):
+      (p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags,
+       p_align) = struct.unpack('<8L', phdata[pho : pho + 32])
+      if p_type == PT_LOAD:
+        p__origvaddr = p_vaddr
+        ph.append((p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz,
+                   p_flags, p_align, p__origvaddr, ''))
+      #truncate_ofs = max(truncate_ofs, p_offset + p_filesz)
+
+    # Load segments from file.
+    for i, phe in enumerate(ph):
+      (p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags,
+       p_align, p__origvaddr, p__data) = phe
+      if p_filesz > 0:
+        f.seek(p_offset)
+        p__data = f.read(p_filesz)
+        if len(p__data) != p_filesz:
+          raise ValueError
+      ph[i] = phe[:-1] + (p__data,)
+
+    f.seek(e_shoff)
+    shdata = f.read(40 * e_shnum)
+    if len(shdata) != 40 * e_shnum:
+      raise ValueError
+    sh = []
+    for sho in xrange(0, 40 * e_shnum, 40):
+      (sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link,
+       sh_info, sh_addralign, sh_entsize,
+       ) = struct.unpack('<10L', shdata[sho : sho + 40])
+      sh__type_name = SECTION_TYPES[sh_type]  # Can raise IndexError.
+      sh__data = ''
+      if sh_type != SHT_NULL:
+        sh.append((
+            sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link,
+            sh_info, sh_addralign, sh_entsize, sh__type_name, sh__data))
+      #truncate_ofs = max(truncate_ofs, p_offset + p_filesz)
+
+    rel = []
+    for i, she in enumerate(sh):
+      (sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link,
+       sh_info, sh_addralign, sh_entsize, sh__type_name, sh__data) = she
+      # Don't load SHT_STRTABs (not only sh_strndx), SHT_SYMTAB.
+      if sh_size > 0 and sh_type == SHT_REL:
+        f.seek(sh_offset)
+        sh__data = f.read(sh_size)
+        if len(sh__data) != sh_size:
+          raise ValueError
+        if sh_type == SHT_REL:
+          if len(sh__data) & 7:
+            raise ValueError
+          for ro in xrange(0, len(sh__data), 8):
+            r_offset, r_info = struct.unpack('<2L', sh__data[ro : ro + 8])
+            r_sym, r_type = r_info >> 8, r_info & 255
+            if r_type == 0 or r_type >= len(RELOCATION_TYPES):
+              raise ValueError
+            r_type_name = RELOCATION_TYPES[r_type]
+            rel.append((r_offset, r_sym, r_type, r_type_name))
+          sh__data = ''
+      sh[i] = she[:-1] + (sh__data,)
+  finally:
+    f.close()  # Works even if fout == f.
+  return e_entry, ph, sh, rel
+
+
+def load_tinyc32_elf(filename):
+  """Load an .elf file generated by gcc invoked by tinyc32."""
+  e_entry, ph, sh, rel = load_elf(filename)
+  if len(ph) != 1:
+    raise ValueError('Expected 1 PT_LOAD segment, got %d.\n' % len(ph))
+  data = ph[0][-1]
+  if not data.startswith('\xb8\xfeL\xcd!'):
+    raise ValueError('COM32R signature expected.')
+  if (  # Relocated output.
+      not data.startswith('\xb8\xfeL\xcd!\xfc\xe8\x00\x00\x00\x00\x5b') and
+      # Unrelocated data returned by load_tinyc32_elf after pass 1.
+      not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08') and
+      # Unrelocated data returned by load_tinyc32_elf after pass 2.
+      not data.startswith('\xb8\xfeL\xcd!\xfc\x90\x90\x90\x90\x90\x90\x90'
+                          '\x90\x90\x90\x90\x90')):
+    raise ValueError('tinyc32 COM32R signature expected.')
+  relofss = [r_offset for r_offset, r_sym, r_type, r_type_name in rel
+             if r_type == R_386_32]
+  if not relofss:
+    # There must be at least one, e.g. csargs_all in start0.s.
+    raise ValueError('Missing relocations.')
+  return data, relofss
+
+
+def get_relocation_size(len_relofss):
+  return 8 + len_relofss * 6
+
+
+def relocate_tinyc32_elf(data, relofss, is_pass2):
+  if is_pass2:
+    if not data.startswith('\xb8\xfeL\xcd!\xfc\x90\x90\x90\x90\x90\x90\x90'
+                           '\x90\x90\x90\x90\x90'):
+      raise ValueError('Pass 2 tinyc32 COM32R signature expected.')
+  else:
+    if not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08'):
+      raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
+  output = [
+      data[:6],
+      '\xe8\0\0\0\0'  # call next_instruction.
+      '\x5b'  # pop ebx.
+  ]
+  relocation_size = get_relocation_size(len(relofss))
+  if is_pass2:
+    delta = -11
+    if (data[6 : 6 + relocation_size] != '\x90' * relocation_size or
+        data[6 + relocation_size : 10 + relocation_size] != '\x8d\x74\x24\x08'):
+      raise ValueError('Missing NOPs in pass 2 tinyc32 COM32R.')
+  else:
+    delta = relocation_size - 11
+  for relofs in relofss:
+    # Add instruction to fix R_386_PC relocation at relofs.
+    # add [dword ebx + (relofs + delta)], ebx
+    output.append('\x01\x9b' + struct.pack('<L', relofs + delta))
+  # We need this jump to flush the prefetch queue:
+  # https://stackoverflow.com/a/43241919/97248
+  # Pentium 6 is smart enough without this jump, but we want to be
+  # backwards-compatible.
+  output.append('\xeb\0')  # jmp short next_instruction.
+
+  # Like output.append(data[6:]), but add delta to each relocated value.
+  i = 6
+  if is_pass2:
+    i += relocation_size
+    delta = -11
+  else:
+    delta = relocation_size - 11
+  for relofs in relofss:
+    output.append(data[i : relofs])
+    i = relofs
+    output.append(struct.pack(
+        '<L', struct.unpack('<L', data[i : i + 4])[0] + delta))
+    i += 4
+  output.append(data[i:])
+  return ''.join(output)
+
+
+# ---
+
+
+def follow_symlinks(prog):
+  try:
+    while stat.S_ISLNK(os.lstat(prog).st_mode):
+      prog = os.path.join(os.path.dirname(prog), os.readlink(prog))
+      # TODO(pts): Collapse ..s in the path etc.
+  except OSError, e:
+    pass
+  return prog
+
+
+def find_file(filename, dirs):
+  """Returns None if not found."""
+  for dirname in dirs:
+    result = os.path.join(dirname, filename)
+    try:
+      stat_obj = os.lstat(result)
+    except OSError:
+      continue
+    if stat.S_ISREG(stat_obj.st_mode):
+      return result
+  return None
+
+
+def run_command(cmd, is_verbose):
+  if not isinstance(cmd, (tuple, list)):
+    raise TypeError
+  if is_verbose:
+    print >>sys.stderr, 'info: running: %s' % ' '.join(map(pipes.quote, cmd))
+  try:
+    exit_code = subprocess.call(cmd)
+  except OSError, e:
+    if e[0] == errno.ENOENT:
+      raise RuntimeError('Command not found: %s' % cmd[0])
+  if exit_code:
+    raise RuntimeError('Command failed: %s ..., see above.' % cmd[0])
+
+
+def ensure_removed(filename):
+  try:
+    os.remove(filename)
+  except OSError:
+    assert not os.path.exists(filename)
+
+
+def main(argv):
+  is_verbose = False
+  if len(argv) > 1 and argv[1] == '-v':
+    is_verbose = True
+    del argv[1]
+  if len(argv) < 2 or argv[1] == '--help':
+    sys.stderr.write(
+        'Usage: %s <gcc> [<compiler-arg>...]\n'
+        'Invokes the C/C++ compiler with -static against the xtiny libc\n' %
+        (argv or 'xtiny')[0])
+    sys.exit(1)
+  prog = follow_symlinks(__file__)
+  progdir = os.path.dirname(prog)
+  compiler_cmd = [argv[1]]
+  compiler_basename = os.path.basename(compiler_cmd[0])
+  is_clang = 'clang' in compiler_basename
+  is_compiling = False
+  is_linking = True
+  opt = None
+  do_defaultlibs = True
+  do_startfiles = True
+  output_filename = None
+  do_stdinc = True
+  do_multipass = False
+
+  i = 2
+  libdirs = []
+  args = []
+  while i < len(argv):
+    arg = argv[i]
+    i += 1
+    if not arg.startswith('-') or arg == '-':
+      base, ext = os.path.splitext(os.path.basename(arg))
+      if ext in ('.cc', '.cp', '.cxx', '.cpp', '.c++', '.C',  # C++.
+                 '.c', '.i', '.ii', '.m', '.mi', '.mm', '.M', '.mii',
+                 '.h', '.H', '.hp', '.hxx', '.hpp', '.HPP', '.h++', '.tcc',
+                 '.s', '.S', '.sx'):
+        is_compiling = True
+    elif arg == '--':
+      args.extend(argv[i - 1:])
+      break
+    elif arg == '-L' and i < len(argv):
+      arg = argv[i]
+      i += 1
+      libdirs.append(arg)
+      continue
+    elif arg.startswith('-L') and len(arg) > 2:
+      libdirs.append(arg[2:])
+      continue
+    elif arg == '-l' and i < len(argv):
+      arg = '-l' + argv[i]
+      i += 1
+    elif arg == '-I' and i < len(argv):
+      arg = '-I' + argv[i]
+      i += 1
+    elif arg == '-o' and i < len(argv):
+      output_filename = argv[i]
+      i += 1
+      continue
+    elif arg.startswith('-o') and len(arg) > 2:
+      output_filename = arg[2:]
+      continue
+    elif arg.startswith('-O'):
+      opt = arg
+    elif arg == '-E':
+      is_linking = False
+      pass
+    elif arg == '-c':
+      is_linking = False
+    elif arg in ('-S', '-M', '-MM'):
+      is_linking = False
+    elif arg == '-v':
+      is_verbose = True
+    elif arg == '-nostdlib':
+      do_defaultlibs = do_startfiles = False
+      continue
+    elif arg == '-nodefaultlibs':
+      do_defaultlibs = False
+      continue
+    elif arg == '-nostartfiles':
+      do_startfiles = False
+      sys.stderr.write(
+          'fatal: unsupported tinyc32 flag %s, '
+          'start0.o needed for relocation\n' % arg)
+      sys.exit(1)
+      continue
+    elif arg == '-nostdinc':
+      do_stdinc = False
+      continue
+    elif arg == '-ftinyc32-multipass':
+      # Multipass compilation works better with alignment of global variables.
+      do_multipass = True
+      continue
+    elif (
+        arg in ('--sysroot', '--gcc-toolchain', '-target', '-m64',
+                '-sysld', '--sysld', '-p', '-pg', '-pie', '-fpic', '-fPIC',
+                '-fpie', '-fPIE', '-shared', '-shared-libgcc',
+                '-nostdinc++', '-m64') or
+        # -target is Cland-specific.
+        arg.startswith('-B') or
+        arg.startswith('--sysroot=') or
+        arg.startswith('--gcc-toolchain=')):
+      sys.stderr.write('fatal: unsupported tinyc32 flag: %s\n' % arg)
+      sys.exit(1)
+    elif arg in ('-static-libgcc', '-s', '-static', '-m32'):
+      continue
+    args.append(arg)
+  libdirs.append(progdir)
+
+  cmd = compiler_cmd[:]
+  # * No `-s', it prevents `objdump -r' from working.
+  # * syslinux-4.07 uses -mregpam=3, but we could differ here, because the
+  #   source code has __attribute__((regparm(...))) explicitly when needed.
+  # * syslinux-4.07 uses -march=i386, we use -march=i686 (Pentium Pro, 1995-11).
+  # * -fexceptions shouldn't be needed in C code
+  # * -falign-jumps=0 and -falign-jumps=1 are equivalent.
+  # * We don't specify -msoft-float. Does it call sqrt etc.? What's the
+  #   difference if we don't have a math library?
+  # * We also use -fwrapv (assuming 2s complement arithmetics for signed ints)
+  #   for more predictable output.
+  # * We also use -fno-strict-aliasing for more predictable output.
+  if is_linking:
+    cmd.extend(('-Wl,-Ttext=0', '-Wl,-e,_start0', '-Wl,-N', '-Wl,-q',
+                '-Wl,--build-id=none', '-Wl,--gc-sections', '-nostdlib'))
+  cmd.extend(('-m32', '-march=i686', '-static'))
+  if is_compiling:
+    cmd.extend(('-nostdinc', '-D__TINYC32__'))
+    if do_defaultlibs:
+      cmd.append('-D__TINYC32_DEFAULTLIBS__')
+    cmd.extend(('-mregparm=3', '-fno-stack-protector', '-fomit-frame-pointer',
+                '-fno-ident',
+                '-fno-unwind-tables', '-fno-asynchronous-unwind-tables',
+                '-ffunction-sections', '-fdata-sections', '-ffreestanding',
+                '-freg-struct-return','-fwrapv' ,'-fno-strict-aliasing',
+                '-isystem', '%s/include' % progdir))
+  if opt in (None, '-Os'):
+    cmd.extend(('-Os', '-falign-functions=1'))
+    cmd.extend(('-mpreferred-stack-boundary=2','-falign-labels=1',
+                '-falign-jumps=1', '-falign-loops=1'))
+  else:
+    cmd.append(opt)
+
+  # Will be added in front of the first source file.
+  extra_sources = []
+  if is_linking:
+    if output_filename is None:
+      output_filename = 'a.c32'
+    start0_filename = output_filename + '.tmp.start0.s'
+    start0_filename_orig = os.path.join(progdir, 'start0.o')
+    extra_sources.append(start0_filename_orig)
+
+  i = 0
+  while i < len(args):
+    arg = args[i]
+    i += 1
+    if not arg.startswith('-') or arg == '-':
+      if extra_sources:
+        extra_sources_idx = len(cmd)
+        cmd.extend(extra_sources)
+        extra_sources = ()
+    elif arg.startswith('-l'):
+      if not is_linking:
+        continue
+      filename_base = 'lib%s.a' % arg[2:]
+      arg = find_file(filename_base, libdirs)
+      if not arg:
+        raise RuntimeError('Library file %r not found in %r' %
+                           (filename_base, libdirs))
+    cmd.append(arg)
+  if extra_sources:
+    extra_sources_idx = len(cmd)
+    cmd.extend(extra_sources)
+    extra_sources = ()
+  if do_defaultlibs and is_linking:
+    cmd.append(os.path.join(progdir, 'libtinyc32.a'))
+  if is_linking:
+    elf_filename = output_filename + '.tmp.elf'
+    cmd.extend(('-o', elf_filename))
+  elif output_filename is not None:
+    cmd.extend(('-o', output_filename))
+
+  run_command(cmd, is_verbose)  # Pass 1.
+
+  if is_linking:
+    data, relofss = load_tinyc32_elf(elf_filename)
+    if do_multipass:
+      f = open(os.path.join(progdir, 'start0.s'))
+      try:
+        start0_data = f.read()
+      finally:
+        f.close()
+      data = start0_data.replace(
+          '\n/*.include "reloc.s"*/\n',
+          '\n.fill %d, 1, 0x90\n' % get_relocation_size(len(relofss)))
+      if data == start0_data:
+        raise ValueError('Missing .include "reloc.s".')
+      f = open(start0_filename, 'w')
+      try:
+        f.write(data)
+      finally:
+        f.close()
+      if is_verbose:
+        print >>sys.stderr, 'info: running pass 2 linking'
+      assert cmd[extra_sources_idx] == start0_filename_orig
+      cmd[extra_sources_idx] = start0_filename
+      run_command(cmd, is_verbose)  # Pass 2.
+      data, relofss = load_tinyc32_elf(elf_filename)
+      data = relocate_tinyc32_elf(data, relofss, is_pass2=True)
+      ensure_removed(start0_filename)
+    else:
+      data = relocate_tinyc32_elf(data, relofss, is_pass2=False)
+    ensure_removed(elf_filename)
+    f = open(output_filename, 'wb')
+    try:
+      f.write(data)
+    finally:
+      f.close()
+
+  if output_filename is not None:
+    try:
+      stat_obj = os.stat(output_filename)
+      if not stat.S_ISREG(stat_obj.st_mode):
+        raise OSError
+    except OSError:
+      raise RuntimeError('Output file not created: %s' % output_filename)
+    if is_verbose:
+      if is_linking:
+        print >>sys.stderr, 'info: created executable file: %s (%d bytes)' % (
+            output_filename, stat_obj.st_size)
+      else:
+        print >>sys.stderr, 'info: created output file: %s (%d bytes)' % (
+            output_filename, stat_obj.st_size)
+
+
+if __name__ == '__main__':
+  try:
+    exit(main(sys.argv))
+  except (RuntimeError, SystemExit), e:
+    if isinstance(e, SystemExit) and (not e.args or e.args[0] is None):
+      raise
+    print >>sys.stderr, 'fatal: %s' % e
+    sys.exit(1)

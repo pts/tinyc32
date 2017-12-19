@@ -88,7 +88,7 @@ struct com32_filedata {
   uint16_t handle;  /* File handle */
 };
 
-extern struct csargs_all {
+extern __attribute__((aligned(1))) struct csargs_all {
   uint32_t cs_bounce_seg;
   /* csargs_copy: */
   char *cs_cmdline;  /* Tends to have a trailing space, e.g. "quiet ". */

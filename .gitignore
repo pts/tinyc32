@@ -2,3 +2,4 @@
 *.o
 core
 a.out
+!start0.o
