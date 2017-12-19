@@ -532,7 +532,7 @@ def main(argv):
       data = relocate_tinyc32_elf(data, relofss, 1, is_pass2=True)
     else:
       data = relocate_tinyc32_elf(data, relofss, p_align, is_pass2=False)
-    #ensure_removed(elf_filename)
+    ensure_removed(elf_filename)
     f = open(output_filename, 'wb')
     try:
       f.write(data)
