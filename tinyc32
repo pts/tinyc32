@@ -338,6 +338,10 @@ def main(argv):
   # boundary). The beginning of the executable is always aligned, Syslinux
   # loads it to an address divisible by 0x10000.
   do_align = None
+  # Display a warning if alignment is greater than 1.
+  do_warn_align = None
+  do_warn_align_if_no_align = False
+  do_warn_align_is_error = False
 
   i = 2
   libdirs = []
@@ -416,6 +420,22 @@ def main(argv):
     elif arg == '-fno-tinyc32-align':
       do_align = False
       continue
+    elif arg == '-Wtinyc32-align':  # Warn if any symbol has alignment larger than 1.
+      do_warn_align = True
+      continue
+    elif arg == '-Wno-tinyc32-align':  # Warn if any symbol has alignment larger than 1.
+      do_warn_align = do_warn_align_if_no_align = False
+      continue
+    elif arg == '-Wno-error=tinyc32-align':
+      do_warn_align_is_error = False
+      continue
+    elif arg == '-Werror=tinyc32-align':
+      do_warn_align_is_error = do_warn_align = True
+      continue
+    elif arg == '-Werror':
+      do_warn_align_is_error = True
+    elif arg in ('-Wall', '-Wextra'):
+      do_warn_align_if_no_align = True
     elif arg in ('-mpreferred-stack-boundary=1', '-mpreferred-stack-boundary=2',
                  '-falign-labels=1', '-falign-functions=1',
                  '-falign-jumps=1', '-falign-loops=1', '-fpack-struct=1'):
@@ -439,6 +459,8 @@ def main(argv):
     opt_flag = '-Os'
   if do_align is None:
     do_align = opt_flag not in (None, '-Os')
+  if do_warn_align is None:
+    do_warn_align = not do_align and do_warn_align_if_no_align
 
   cmd = compiler_cmd[:]
   # * No `-s', it prevents `objdump -r' from working.
@@ -518,10 +540,19 @@ def main(argv):
     if do_multipass is None:
       # Default function alignment is 16.
       do_multipass = p_align > 16
-    # TODO(pts): Add warnings if alignment is >1. Even better: add
-    #            .s post-processing.
-    if is_verbose:
-      print >>sys.stderr, 'info: max alignment is %d' % p_align
+    if p_align > 1 and do_warn_align:
+      if do_warn_align_is_error:
+        severity = 'error'
+      else:
+        severity = 'warning'
+      print >>sys.stderr, (
+          '%s: %s: max alignment is %d, consider adding '
+          '__attribute__((aligned(1))) to your global variables to make '
+          'the executable smaller' %
+          (output_filename, severity, p_align))
+      if severity == 'error':
+        ensure_removed(elf_filename)
+        sys.exit(2)
     if do_multipass:  # TODO(pts): Test with an actually aligned global.
       i = cmd.index('-Wl,-Ttext=0')
       cmd[i] = '-Wl,-Ttext=0x%x' % get_relocation_size(len(relofss))
@@ -548,8 +579,10 @@ def main(argv):
       raise RuntimeError('Output file not created: %s' % output_filename)
     if is_verbose:
       if is_linking:
-        print >>sys.stderr, 'info: created executable file: %s (%d bytes)' % (
-            output_filename, stat_obj.st_size)
+        print >>sys.stderr, (
+            'info: created executable file: %s (%d bytes, '
+            'max alignment is %d)' %
+            (output_filename, stat_obj.st_size, p_align))
       else:
         print >>sys.stderr, 'info: created output file: %s (%d bytes)' % (
             output_filename, stat_obj.st_size)
@@ -559,7 +592,8 @@ if __name__ == '__main__':
   try:
     exit(main(sys.argv))
   except (RuntimeError, SystemExit), e:
-    if isinstance(e, SystemExit) and (not e.args or e.args[0] is None):
+    if isinstance(e, SystemExit) and (not e.args or e.args[0] is None or
+                                      isinstance(e.args[0], int)):
       raise
     print >>sys.stderr, 'fatal: %s' % e
     sys.exit(1)
