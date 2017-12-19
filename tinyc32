@@ -184,11 +184,8 @@ def load_tinyc32_elf(filename, is_verbose):
     raise ValueError('Expected 1 PT_LOAD segment, got %d.\n' % len(ph))
   data = ph[0][-1]
   p_align = ph[0][-3]  # A power of 2.
-  # TODO(pts): Don't run pass2 if alignment is 1.
   # TODO(pts): Add warnings if alignment is >1. Even better: add
   #            .s post-processing.
-  if is_verbose:
-    print >>sys.stderr, 'info: max alignment is %d' % p_align
   if not data.startswith('\xb8\xfeL\xcd!'):
     raise ValueError('COM32R signature expected.')
   if (  # Relocated output.
@@ -201,14 +198,21 @@ def load_tinyc32_elf(filename, is_verbose):
   if not relofss:
     # There must be at least one, e.g. csargs_all in start0.s.
     raise ValueError('Missing relocations.')
-  return data, relofss
+  return data, relofss, p_align
 
 
 def get_relocation_size(len_relofss):
+  """Returns the minimum number of bytes inserted by relocation."""
   return 8 + len_relofss * 6
 
 
-def relocate_tinyc32_elf(data, relofss, is_pass2):
+def relocate_tinyc32_elf(data, relofss, align, is_pass2):
+  # align is a modulus to which the number of bytes inserted
+  # should be rounded up.
+  if not isinstance(align, int):
+    raise TypeError
+  if not 1 <= align <= 32768:
+    raise ValueError
   if not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08'):
     raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
   output = [
@@ -217,6 +221,8 @@ def relocate_tinyc32_elf(data, relofss, is_pass2):
       '\x5b'  # pop ebx.
   ]
   relocation_size = get_relocation_size(len(relofss))
+  nop_count = -relocation_size % align
+  relocation_size += nop_count
   if is_pass2:
     delta = -11
   else:
@@ -229,7 +235,12 @@ def relocate_tinyc32_elf(data, relofss, is_pass2):
   # https://stackoverflow.com/a/43241919/97248
   # Pentium 6 is smart enough without this jump, but we want to be
   # backwards-compatible.
-  output.append('\xeb\0')  # jmp short next_instruction.
+  if nop_count < 128:
+    output.append('\xeb' + chr(nop_count))  # jmp short next_instruction.
+  else:
+    nop_count -= 3  # The jump below is 3 bytes longer than the short jump.
+    output.append('\xe9' + struct.pack('<L', nop_count))  # jmp ....
+  output.append('\x90' * nop_count)
 
   # Like output.append(data[6:]), but add delta to each relocated value.
   i = 6
@@ -315,12 +326,18 @@ def main(argv):
   is_clang = 'clang' in compiler_basename
   is_compiling = False
   is_linking = True
-  opt = None
+  opt_flag = None
   do_defaultlibs = True
   do_startfiles = True
   output_filename = None
   do_stdinc = True
-  do_multipass = False
+  # Multipass compilation (do_multipass = True) is needed for alignment of
+  # global variables (do_align = True).
+  do_multipass = None
+  # If true, then data structures should be normally aligned (to eg. 4-byte
+  # boundary). The beginning of the executable is always aligned, Syslinux
+  # loads it to an address divisible by 0x10000.
+  do_align = None
 
   i = 2
   libdirs = []
@@ -360,7 +377,7 @@ def main(argv):
       output_filename = arg[2:]
       continue
     elif arg.startswith('-O'):
-      opt = arg
+      opt_flag = arg
     elif arg == '-E':
       is_linking = False
       pass
@@ -387,9 +404,22 @@ def main(argv):
       do_stdinc = False
       continue
     elif arg == '-ftinyc32-multipass':
-      # Multipass compilation works better with alignment of global variables.
       do_multipass = True
       continue
+    elif arg == '-fno-tinyc32-multipass':
+      # Multipass compilation works better with alignment of global variables.
+      do_multipass = False
+      continue
+    elif arg == '-ftinyc32-align':
+      do_align = True
+      continue
+    elif arg == '-fno-tinyc32-align':
+      do_align = False
+      continue
+    elif arg in ('-mpreferred-stack-boundary=1', '-mpreferred-stack-boundary=2',
+                 '-falign-labels=1', '-falign-functions=1',
+                 '-falign-jumps=1', '-falign-loops=1', '-fpack-struct=1'):
+      do_align = False  # Turn on others as well.
     elif (
         arg in ('--sysroot', '--gcc-toolchain', '-target', '-m64',
                 '-sysld', '--sysld', '-p', '-pg', '-pie', '-fpic', '-fPIC',
@@ -405,6 +435,10 @@ def main(argv):
       continue
     args.append(arg)
   libdirs.append(progdir)
+  if opt_flag is None:
+    opt_flag = '-Os'
+  if do_align is None:
+    do_align = opt_flag not in (None, '-Os')
 
   cmd = compiler_cmd[:]
   # * No `-s', it prevents `objdump -r' from working.
@@ -426,18 +460,20 @@ def main(argv):
     cmd.extend(('-nostdinc', '-D__TINYC32__'))
     if do_defaultlibs:
       cmd.append('-D__TINYC32_DEFAULTLIBS__')
+    if do_align:
+      cmd.extend(('-D__TINYC32_ALIGN__', '-D__TINYC32_ALIGNED__='))
+    else:
+      cmd.extend(('-D__TINYC32_ALIGNED__=__attribute__((aligned(1)))',
+                  '-mpreferred-stack-boundary=2', '-falign-labels=1',
+                  '-falign-functions=1',
+                  '-falign-jumps=1', '-falign-loops=1', '-fpack-struct=1'))
+    cmd.append(opt_flag)
     cmd.extend(('-mregparm=3', '-fno-stack-protector', '-fomit-frame-pointer',
                 '-fno-ident',
                 '-fno-unwind-tables', '-fno-asynchronous-unwind-tables',
                 '-ffunction-sections', '-fdata-sections', '-ffreestanding',
                 '-freg-struct-return','-fwrapv' ,'-fno-strict-aliasing',
                 '-isystem', '%s/include' % progdir))
-  if opt in (None, '-Os'):
-    cmd.extend(('-Os', '-falign-functions=1'))
-    cmd.extend(('-mpreferred-stack-boundary=2','-falign-labels=1',
-                '-falign-jumps=1', '-falign-loops=1'))
-  else:
-    cmd.append(opt)
 
   # Will be added in front of the first source file.
   extra_sources = []
@@ -478,17 +514,24 @@ def main(argv):
   run_command(cmd, is_verbose)  # Pass 1.
 
   if is_linking:
-    data, relofss = load_tinyc32_elf(elf_filename, is_verbose)
+    data, relofss, p_align = load_tinyc32_elf(elf_filename, is_verbose)
+    if do_multipass is None:
+      # Default function alignment is 16.
+      do_multipass = p_align > 16
+    # TODO(pts): Add warnings if alignment is >1. Even better: add
+    #            .s post-processing.
+    if is_verbose:
+      print >>sys.stderr, 'info: max alignment is %d' % p_align
     if do_multipass:  # TODO(pts): Test with an actually aligned global.
       i = cmd.index('-Wl,-Ttext=0')
       cmd[i] = '-Wl,-Ttext=0x%x' % get_relocation_size(len(relofss))
       if is_verbose:
         print >>sys.stderr, 'info: running pass 2 linking'
       run_command(cmd, is_verbose)  # Pass 2.
-      data, relofss = load_tinyc32_elf(elf_filename, is_verbose)
-      data = relocate_tinyc32_elf(data, relofss, is_pass2=True)
+      data, relofss, p_align = load_tinyc32_elf(elf_filename, is_verbose)
+      data = relocate_tinyc32_elf(data, relofss, 1, is_pass2=True)
     else:
-      data = relocate_tinyc32_elf(data, relofss, is_pass2=False)
+      data = relocate_tinyc32_elf(data, relofss, p_align, is_pass2=False)
     #ensure_removed(elf_filename)
     f = open(output_filename, 'wb')
     try:

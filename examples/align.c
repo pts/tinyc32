@@ -3,5 +3,6 @@
 __attribute__((aligned(256))) char msg[] = "MSG";
 
 void *_start() {
+  cs_print("Align.\r\n");
   return msg;
 }

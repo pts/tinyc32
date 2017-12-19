@@ -32,6 +32,12 @@ Example usage in your syslinux.cfg:
   kernel hello.c32
   append your  example args
 
+With the default settings, tinyc32 tries to create the smallest possible
+executable. This includes passing -Os and -falign-functions (etc.) to GCC.
+If you specify an -O... flag other than -Os (recommended for fast code:
+-O2), then tinyc32 won't get in your way, e.g. it won't specify any
+memory alignment flags to GCC.
+
 tinyc32 has been tested with Syslinux 4.07.
 
 How does tinyc32 work?
