@@ -60,4 +60,49 @@ Q2. Can the executables created by tinyc32 be compressed?
 Theoretically yes, but UPX (http://upx.sf.net/) and other on-the-fly
 compressors don't recognize the .c32 format yet.
 
+Q3. How can I try the .c32 I'm developing?
+""""""""""""""""""""""""""""""""""""""""""
+You can use QEMU on an i386 or amd64 system. On Ubuntu, install it as:
+
+  $ sudo apt-get install qemu-system-x86
+
+Get the mtools tool for copying files into FAT filesystem images:
+
+  $ curl -OL https://github.com/pts/tinyc32/releases/download/helper/mtools
+  $ chmod 755 mtools
+
+Get the Syslinux image liigboot_empty.img . It contains a FAT12 filesystem
+with Syslinux 4.07 on it. Get it like this
+
+  $ curl -OL https://github.com/pts/tinyc32/releases/download/helper/c32try_empty.img.gz
+  $ gzip -cd <c32try_empty.img.gz >c32try.img
+
+Get an example .c32 file to run:
+
+  $ curl -O https://raw.githubusercontent.com/pts/tinyc32/master/examples/hello_golden.c32
+
+Copy your .c32 file you want to try to a.c32 onto the image:
+
+  $ ./mtools -c mcopy -i c32try.img hello_golden.c32 ::a.c32
+
+Run the QEMU emulator in the GUI:
+
+  $ qemu-system-i386 -m 4 -hda c32try.img -machine accel=kvm -net none
+
+It should display something like this in a new black window:
+
+  SeaBIOS (...)
+  Booting from Hard Disk...
+  MR 0x...
+  Hello, World!
+  boot: _
+
+The ``Hello, World!'' is the output of the hello_golden.c32, so it has
+succeeded. You can run it again by pressing <A> and <Enter>.
+
+If QEMU doesn't start up, drop the `-machine accel=kvm' flag and try again.
+
+Exit from QEMU by closing the black window or presing on Ctrl-<C> in the
+terminal window you have started it in.
+
 __END__
