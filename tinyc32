@@ -191,7 +191,7 @@ def load_tinyc32_elf(filename, is_verbose):
   if (  # Relocated output.
       not data.startswith('\xb8\xfeL\xcd!\xfc\xe8\x00\x00\x00\x00\x5b') and
       # Unrelocated data returned by load_tinyc32_elf.
-      not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08')):
+      not data.startswith('\xb8\xfeL\xcd!\xfc\xb9')):
     raise ValueError('tinyc32 COM32R signature expected.')
   relofss = [r_offset for r_offset, r_sym, r_type, r_type_name in rel
              if r_type == R_386_32]
@@ -213,13 +213,17 @@ def relocate_tinyc32_elf(data, relofss, align, is_pass2):
     raise TypeError
   if not 1 <= align <= 32768:
     raise ValueError
-  if not data.startswith('\xb8\xfeL\xcd!\xfc\x8d\x74\x24\x08'):
+  if not data.startswith('\xb8\xfeL\xcd!\xfc\xb9'):
     raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
   output = [
       data[:6],
       '\xe8\0\0\0\0'  # call next_instruction.
       '\x5b'  # pop ebx.
   ]
+  # This is the argument of the `mov $__bss_size, %ecx' instruction in
+  # start.s. We don't want a relocation here, we want the raw size.
+  assert relofss[0] == 7
+  del relofss[0]
   relocation_size = get_relocation_size(len(relofss))
   nop_count = -relocation_size % align
   relocation_size += nop_count
