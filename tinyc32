@@ -228,6 +228,7 @@ def relocate_tinyc32_elf(data, relofss, align, is_pass2):
   else:
     delta = relocation_size - 11
   for relofs in relofss:
+    #print 'relofs 0x%x' % relofs
     # Add instruction to fix R_386_PC relocation at relofs.
     # add [dword ebx + (relofs + delta)], ebx
     output.append('\x01\x9b' + struct.pack('<L', relofs + delta))
@@ -476,6 +477,7 @@ def main(argv):
   # * We also use -fno-strict-aliasing for more predictable output.
   if is_linking:
     cmd.extend(('-Wl,-Ttext=0', '-Wl,-e,_start0', '-Wl,-N', '-Wl,-q',
+                '-Wl,--defsym=__bss_size=_end-__bss_start',
                 '-Wl,--build-id=none', '-Wl,--gc-sections', '-nostdlib'))
   cmd.extend(('-m32', '-march=i686', '-static'))
   if is_compiling:

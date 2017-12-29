@@ -3,7 +3,7 @@ tinyc32: A tiny C library and toolchain for writing Syslinux COM32R executables
 tinyc32 is a tiny C library and some Python scripts for Unix for creating
 tiny Syslinux COM32R executables (.c32 files). tinyc32 calls GCC with the
 appropriate flags, which calls GNU ld with the appropriate flags. The COM32R
-executables created by tinyc32 are tiny (as little as 158 bytes for
+executables created by tinyc32 are tiny (as little as 186 bytes for
 hello-world), because they contain very little overhead.
 
 Dependencies:
@@ -16,7 +16,7 @@ Dependencies:
 * (A Syslinux installation or sources are not needed.)
 
 Typical example of how tiny the overhead added by tinyc32: a hello-world
-(examples/hello_golden.c32) is 158 bytes, which includes the message of
+(examples/hello_golden.c32) is 186 bytes, which includes the message of
 15 bytes.
 
 Documentation of the COMBOOT (and COM32R) ABI:

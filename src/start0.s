@@ -18,6 +18,8 @@ cld
  *
  * The layout of csargs_all is found in `struct csargs_all' in
  * include/tinyc32.h .
+ *
+ * TODO(pts): Don't copy to csargs_all, just retain a pointer.
  */
 lea 8(%esp), %esi
 lea csargs_all, %edi
@@ -34,6 +36,19 @@ add $4, %esi
 mov $14, %ecx
 /* Copy over to csargs_all.lmalloc .. .ms_timer . */
 rep movsd
+
+mov $__bss_start, %edi
+xor %eax, %eax
+/* Unfortunately, `mov _end-__bss_start, %ecx' doesn't work. (It doesn't work
+ * in C either with externs.) It would be
+ * better, because it would be 0 relocations.
+ * mov _end, %ecx
+ * sub %edi, %ecx
+ * -- mov $__bss_size, %ecx  ; This also does a relocation (which we don't want).
+ */
+mov $_end, %ecx
+sub %edi, %ecx
+rep stosb
 
 jmp _start  /* Jump to the C function void _start() { ... } by the user. */
 
