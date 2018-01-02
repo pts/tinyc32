@@ -3,3 +3,4 @@
 core
 a.out
 !start0.o
+examples/aligned?.c32

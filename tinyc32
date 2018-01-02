@@ -203,7 +203,13 @@ def load_tinyc32_elf(filename, is_verbose):
 
 def get_relocation_size(len_relofss):
   """Returns the minimum number of bytes inserted by relocation."""
-  return 8 + len_relofss * 6
+  assert len_relofss >= 3, len_relofss
+  # 5 bytes: '\xe8\0\0\0\0'.
+  # 1 byte: '\x5b'.
+  # -6 bytes for the omitted first relocation (`mov $__bss_size, %ecx').
+  # 6 bytes for each relocation; '\x01\x9b????'.
+  # 2 bytes for the short jump to flush the prefetch queue: \xeb?'.
+  return 2 + len_relofss * 6
 
 
 def relocate_tinyc32_elf(data, relofss, align, is_pass2):
@@ -216,15 +222,18 @@ def relocate_tinyc32_elf(data, relofss, align, is_pass2):
   if not data.startswith('\xb8\xfeL\xcd!\xfc\xb9'):
     raise ValueError('Unrelocated tinyc32 COM32R signature expected.')
   output = [
-      data[:6],
+      data[:6],  # mov eax, 0x21cd4cfe (COM32R signature) ++ cld.
       '\xe8\0\0\0\0'  # call next_instruction.
       '\x5b'  # pop ebx.
   ]
+  relocation_size = get_relocation_size(len(relofss))
   # This is the argument of the `mov $__bss_size, %ecx' instruction in
   # start.s. We don't want a relocation here, we want the raw size.
-  assert relofss[0] == 7
+  assert relofss[0] == 7 + (bool(is_pass2) and relocation_size), relofss
   del relofss[0]
-  relocation_size = get_relocation_size(len(relofss))
+  # In addition to the relocation (of relocation_size bytes), we will add
+  # some nops, so that the total number of relocation and nop bytes inserted
+  # will be a multiple of align, thus the rest of the code remains aligned.
   nop_count = -relocation_size % align
   relocation_size += nop_count
   if is_pass2:
@@ -336,13 +345,21 @@ def main(argv):
   do_startfiles = True
   output_filename = None
   do_stdinc = True
-  # Multipass compilation (do_multipass = True) is needed for alignment of
-  # global variables (do_align = True).
-  do_multipass = None
-  # If true, then data structures should be normally aligned (to eg. 4-byte
-  # boundary). The beginning of the executable is always aligned, Syslinux
-  # loads it to an address divisible by 0x10000.
+  # If true, then the alignment of global variables and functions (e.g. to
+  # 4-byte boundary) will be respected. If false, global variables and
+  # functions may end up being unaligned because of the relocation entries
+  # inserted near the beginning. The default is false in most cases (e.g.
+  # with no -O... or with -Os), and true if any -O flags are specified. The
+  # beginning of the executable is always aligned, Syslinux loads it to an
+  # address divisible by 0x10000.
   do_align = None
+  # If true, then enables multipass compilation (i.e. 2 runs of gcc when
+  # liking), which makes the output executable smaller when some global
+  # variables or function are aligned. The maximum amount of saving is 2 *
+  # max_alignment - 1 bytes (maybe even smaller). The value is ignored if
+  # do_align is false. The default is true if max_alignment > 16, because
+  # of the potential of saving 63 bytes in the executable.
+  do_multipass = None
   # Display a warning if alignment is greater than 1.
   do_warn_align = None
   do_warn_align_if_no_align = False
@@ -416,7 +433,6 @@ def main(argv):
       do_multipass = True
       continue
     elif arg == '-fno-tinyc32-multipass':
-      # Multipass compilation works better with alignment of global variables.
       do_multipass = False
       continue
     elif arg == '-ftinyc32-align':
@@ -439,7 +455,8 @@ def main(argv):
       continue
     elif arg == '-Werror':
       do_warn_align_is_error = True
-    elif arg in ('-Wall', '-Wextra'):
+    elif arg in ('-Wall', '-Wextra', '-W'):
+      # -W is the new name for -Wextra, it enables more warnings than -Wall.
       do_warn_align_if_no_align = True
     elif arg in ('-mpreferred-stack-boundary=1', '-mpreferred-stack-boundary=2',
                  '-falign-labels=1', '-falign-functions=1',
@@ -544,7 +561,6 @@ def main(argv):
   if is_linking:
     data, relofss, p_align = load_tinyc32_elf(elf_filename, is_verbose)
     if do_multipass is None:
-      # Default function alignment is 16.
       do_multipass = p_align > 16
     if p_align > 1 and do_warn_align:
       if do_warn_align_is_error:
@@ -559,12 +575,15 @@ def main(argv):
       if severity == 'error':
         ensure_removed(elf_filename)
         sys.exit(2)
-    if do_multipass:  # TODO(pts): Test with an actually aligned global.
+    if not do_align:
+      p_align = 1
+    if p_align > 1 and do_multipass:
       i = cmd.index('-Wl,-Ttext=0')
       cmd[i] = '-Wl,-Ttext=0x%x' % get_relocation_size(len(relofss))
       if is_verbose:
-        print >>sys.stderr, 'info: running pass 2 linking'
-      run_command(cmd, is_verbose)  # Pass 2.
+        print >>sys.stderr, (
+            'info: running pass 2 linking, max alignment is %d' % p_align)
+      run_command(cmd, is_verbose)  # Pass 2 linking.
       data, relofss, p_align = load_tinyc32_elf(elf_filename, is_verbose)
       data = relocate_tinyc32_elf(data, relofss, 1, is_pass2=True)
     else:
