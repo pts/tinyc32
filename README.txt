@@ -116,4 +116,18 @@ If QEMU doesn't start up, drop the `-machine accel=kvm' flag and try again.
 Exit from QEMU by closing the black window or presing on Ctrl-<C> in the
 terminal window you have started it in.
 
+Q4. I get a linker ``internal error in do_layout''.
+"""""""""""""""""""""""""""""""""""""""""""""""""""
+If you get:
+
+  /usr/bin/ld: internal error in do_layout, at ../../gold/object.cc:1723
+
+... then probably you are using a broken version of GNU gold (such as GNU
+gold 1.11 in Binutils 2.24).
+
+The solution is to make the /usr/bin/ld symlink point to GNU ld rather than
+GNU gold. For example, on Ubuntu:
+
+  $ sudo ln -sf ld.bfd /usr/bin/ld
+
 __END__
