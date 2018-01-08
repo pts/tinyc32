@@ -190,8 +190,8 @@ def load_tinyc32_elf(filename, is_verbose):
     raise ValueError('COM32R signature expected.')
   if (  # Relocated output of tinyc32. mov eax, 0x21cd4cfe; cld; call next_instruction; pop ebx; add [dword ebx + ...], ebx
       not data.startswith('\xb8\xfeL\xcd!\xfc\xe8\x00\x00\x00\x00\x5b\x01\x9b') and
-      # Compressed .c32 (maybe not created by tinyc32). mov eax, 0x21cd4cfe; cld; call next_instruction; pop ebx; mov ecx, ...
-      #not data.startswith('\xb8\xfeL\xcd!\xfc\xe8\x00\x00\x00\x00\x5b\xb9') and
+      # Compressed .c32, by upxbc --c32 (maybe not originally by tinyc32). mov eax, 0x21cd4cfe; cld; call next_instruction; pop ebx; mov ecx, ...
+      #not data.startswith('\xb8\xfeL\xcd!\xe8\x00\x00\x00\x00\x5b\xb9') and
       # Unrelocated temporary code created by gcc invoked by tinyc32, starting with start0.s: mov eax, 0x21cd4cfe; cld; mov ecx, dword ...
       not data.startswith('\xb8\xfeL\xcd!\xfc\xb9')):
     raise ValueError('tinyc32 COM32R signature expected.')
