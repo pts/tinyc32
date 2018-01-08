@@ -51,14 +51,25 @@ https://stackoverflow.com/q/47846650/97248), so tinyc32 does a regular
 compilation and linking, dumping the relocations with `-Wl,-q', and for each
 R_386_32 relocation it finds, it adds an `add [dword ebx +
 ...], ebx' instruction (6 bytes, of which 4 bytes is the address) to the
-startup code, which does the relocation at runtime. Because of these
-additions, tinyc32 does another round of gcc compilation, which does at least
-and assembler invocation for the newly added instructions.
+startup code, which does the relocation at runtime.
+
+Because of these additions, some offsets may be shifted, and this may cause
+aligned global variables and functions not aligned anymore. If tinyc32
+detects this, then it adds some more padding to fix the alignment, but for
+large alignment it does another compilation pass with GCC instead. Use
+`-ftinyc32-multipass' to force the 2nd compilation pass.
 
 Q2. Can the executables created by tinyc32 be compressed?
 """""""""""""""""""""""""""""""""""""""""""""""""""""""""
-Theoretically yes, but UPX (http://upx.sf.net/) and other on-the-fly
-compressors don't recognize the .c32 format yet.
+Yes, with upxbc (http://github.com/pts/upxbc):
+
+  $ ./tinyc32 gcc -o examples/hello.c32 examples/hello_main.c
+  $ ./upxbc examples/hello.c32
+
+upxbc uses UPX under the hood to compress the executable. By default it
+passes the highest effort flag (`upx --ultra-brute --lzma'). Please note
+that for very small executables (smaller than 1 KiB), it's unlikely that
+upxbc can make it any smaller.
 
 Q3. How can I try the .c32 I'm developing?
 """"""""""""""""""""""""""""""""""""""""""
