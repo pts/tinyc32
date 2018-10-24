@@ -504,7 +504,7 @@ def main(argv):
                 '-Wl,--build-id=none', '-Wl,--gc-sections', '-nostdlib'))
   cmd.extend(('-m32', '-march=i686', '-static'))
   if is_compiling:
-    cmd.extend(('-nostdinc', '-D__TINYC32__'))
+    cmd.extend(('-fno-pic', '-nostdinc', '-D__TINYC32__'))
     if do_defaultlibs:
       cmd.append('-D__TINYC32_DEFAULTLIBS__')
     if do_align:
